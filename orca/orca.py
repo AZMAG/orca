@@ -793,6 +793,10 @@ class _StepFuncWrapper(object):
     ----------
     step_name : str
     func : callable
+    updates: str or list of str, optional default None
+        List of injectables/tables/columns to update with the step function results.
+            - For `update col` should be in the form: table_name.column_name
+            - For `update_col_from_series` should be in the form: table_name.column_name.loc
     **expressions: kwargs, optional
         Expressions for argument collection. Keys are the arg names
         in the function and the values the expression to use when collecting.
@@ -803,18 +807,49 @@ class _StepFuncWrapper(object):
         Name of step.
 
     """
-    def __init__(self, step_name, func, **expressions):
+    def __init__(self, step_name, func, updates=None, **expressions):
         self.name = step_name
         self._func = func
         self._argspec = getargspec(func)
         self._arg_map = get_arg_map(func, **expressions)
+        self._updates = updates
+
+    def _update_environment(self, name, value):
+        """
+        Update the environment with the new value.
+
+        """
+        if '.' in name:
+            parts = name.split('.')
+            if len(parts) == 2:
+                get_table(parts[0]).update_col(parts[1], value)
+                return
+            if len(parts) == 3:
+                get_table(parts[0]).update_col_from_series(parts[1], value, True)
+                return
+
+        in_tables = name in _TABLES
+        in_injs = name in _INJECTABLES
+
+        if in_tables or ((not in_injs) and isinstance(value, pd.DataFrame)):
+            # if not registered yet, assume data frames will be tables
+            add_table(name, value)
+        else:
+            add_injectable(name, value)
 
     def __call__(self):
         with log_start_finish('calling step {!r}'.format(self.name), logger):
             #kwargs = _collect_variables(names=self._argspec.args,
             #                            expressions=self._argspec.defaults)
             kwargs = _collect_variables2(self._arg_map)
-            return self._func(**kwargs)
+            result  = self._func(**kwargs)
+            if result is not None:
+                u = self._updates
+                if isinstance(u, list):
+                    for i in range(0, len(u)):
+                        self._update_environment(u[i], result[i])
+                else:
+                    self._update_environment(u, result)
 
     def _tables_used(self):
         """
@@ -1740,7 +1775,7 @@ def get_injectable_func_source_data(name):
         return utils.func_source_data(inj)
 
 
-def add_step(step_name, func, **expressions):
+def add_step(step_name, func, updates=None, **expressions):
     """
     Add a step function to Orca.
 
@@ -1754,6 +1789,10 @@ def add_step(step_name, func, **expressions):
     ----------
     step_name : str
     func : callable
+    updates: list of str, optional default None
+        List of injectables/tables/columns to update with the step function results.
+            - For `update col` should be in the form: table_name.column_name
+            - For `update_col_from_series` should be in the form: table_name.column_name.loc
     **expressions: kwargs, optional
         Expressions for argument collection. Keys are the arg names
         in the function and the values the expression to use when collecting.
@@ -1761,12 +1800,12 @@ def add_step(step_name, func, **expressions):
     """
     if isinstance(func, Callable):
         logger.debug('registering step {!r}'.format(step_name))
-        _STEPS[step_name] = _StepFuncWrapper(step_name, func, **expressions)
+        _STEPS[step_name] = _StepFuncWrapper(step_name, func, updates, **expressions)
     else:
         raise TypeError('func must be a callable')
 
 
-def step(step_name=None, **expressions):
+def step(step_name=None, updates=None, **expressions):
     """
     Decorates functions that will be called by the `run` function.
 
@@ -1785,7 +1824,7 @@ def step(step_name=None, **expressions):
             name = step_name
         else:
             name = func.__name__
-        add_step(name, func, **expressions)
+        add_step(name, func, updates, **expressions)
         return func
     return decorator
 
