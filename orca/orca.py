@@ -41,6 +41,7 @@ _MEMOIZED = {}
 _CS_FOREVER = 'forever'
 _CS_ITER = 'iteration'
 _CS_STEP = 'step'
+_CS_DYNAMIC = 'dynamic'
 
 CacheItem = namedtuple('CacheItem', ['name', 'value', 'scope'])
 
@@ -90,6 +91,33 @@ def clear_cache(scope=None):
         for m in tz.filter(lambda x: x.scope == scope, _MEMOIZED.values()):
             m.value.clear_cached()
         logger.debug('cleared cached values with scope {!r}'.format(scope))
+
+
+def clear_injectable(injectable_name):
+    """
+    Clears out the cache for an injected function and forces it to be
+    re-evaluated.
+
+    """
+    _INJECTABLES[injectable_name].clear_cached()
+
+
+def clear_table(table_name):
+    """
+    Clears out an entire table cache. Only call this if you want
+    the entire table to be recreated. Use the 'clear_cache' method (above) if you
+    want to keep the table but just clear additional/computed columns.
+
+    """
+    _TABLES[table_name].clear_cached()
+
+
+def clear_column(table_name, column_name):
+    """
+    Clears out a column cache.
+
+    """
+    _COLUMNS[(table_name, column_name)].clear_cached()
 
 
 def enable_cache():
@@ -164,10 +192,11 @@ class DataFrameWrapper(object):
         The wrapped DataFrame.
 
     """
-    def __init__(self, name, frame, copy_col=True):
+    def __init__(self, name, frame, copy_col=True, arg_map=None):
         self.name = name
         self.local = frame
         self.copy_col = copy_col
+        self._arg_map = arg_map
 
     @property
     def columns(self):
@@ -363,6 +392,10 @@ class DataFrameWrapper(object):
             col.clear_cached()
         logger.debug('cleared cached columns for table {!r}'.format(self.name))
 
+    @property
+    def dependencies(self):
+        return get_dependencies(self._arg_map)
+
 
 class TableFuncWrapper(object):
     """
@@ -466,7 +499,7 @@ class TableFuncWrapper(object):
         self._index = frame.index
         self._len = len(frame)
 
-        wrapped = DataFrameWrapper(self.name, frame, copy_col=self.copy_col)
+        wrapped = DataFrameWrapper(self.name, frame, copy_col=self.copy_col, arg_map=self._arg_map)
 
         if self.cache:
             _TABLE_CACHE[self.name] = CacheItem(
@@ -581,6 +614,10 @@ class TableFuncWrapper(object):
         """
         return utils.func_source_data(self._func)
 
+    @property
+    def dependencies(self):
+        return get_dependencies(self._arg_map)
+
 
 class _ColumnFuncWrapper(object):
     """
@@ -680,6 +717,9 @@ class _ColumnFuncWrapper(object):
         """
         return utils.func_source_data(self._func)
 
+    @property
+    def dependencies(self):
+        return get_dependencies(self._arg_map)
 
 class _SeriesWrapper(object):
     """
@@ -717,6 +757,10 @@ class _SeriesWrapper(object):
 
         """
         pass
+
+    @property
+    def dependencies(self):
+        return []
 
 
 class _InjectableFuncWrapper(object):
@@ -780,9 +824,16 @@ class _InjectableFuncWrapper(object):
 
         """
         x = _INJECTABLE_CACHE.pop(self.name, None)
+        # for d in get_dependents(self.name):
+
+
         if x:
             logger.debug(
                 'injectable {!r} removed from cache'.format(self.name))
+
+    @property
+    def dependencies(self):
+        return get_dependencies(self._arg_map)
 
 
 class _StepFuncWrapper(object):
@@ -888,6 +939,10 @@ class _StepFuncWrapper(object):
 
         """
         return utils.func_source_data(self._func)
+
+    @property
+    def dependencies(self):
+        return get_dependencies(self._arg_map)
 
 
 def is_table(name):
@@ -1124,8 +1179,12 @@ class TableExpression(object):
             cols = get_table(table).columns
         elif cols == 'local':
             cols = get_table(table).local_columns
-        return table, cols
-
+        if isinstance(cols, str):
+            cols = [cols]
+        d = []
+        for c in cols:
+            d.append((table, c))
+        return d
 
     @classmethod
     def evaluate(cls, expr):
@@ -1185,6 +1244,27 @@ def _collect_variables2(arg_map):
             collected[k] = v
 
     return collected
+
+
+def get_dependencies(arg_map):
+    """
+    Gather immediate dependecies.
+
+    TODO: improve treatment of experession classes
+
+    """
+    if arg_map is None:
+        return []
+
+    d = []
+    items = [a[1:] for a in arg_map.values() if isinstance(a, str) and a[0] == '@']
+    for i in items:
+        curr_d = TableExpression.dependencies(i)
+        if curr_d is None:
+            d.append(i)
+        else:
+            d = d + curr_d
+    return d
 
 
 def _collect_variables(names, expressions=None):
