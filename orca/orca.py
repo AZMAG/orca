@@ -383,6 +383,9 @@ class TableFuncWrapper(object):
         a single step of the pipeline.
     copy_col : bool, optional
         Whether to return copies when evaluating columns.
+    **expressions: kwargs, optional
+        Expressions for argument collection. Keys are the arg names
+        in the function and the values the expression to use when collecting.
 
     Attributes
     ----------
@@ -396,7 +399,7 @@ class TableFuncWrapper(object):
     """
     def __init__(
             self, name, func, cache=False, cache_scope=_CS_FOREVER,
-            copy_col=True):
+            copy_col=True, **expressions):
         self.name = name
         self._func = func
         self._argspec = getargspec(func)
@@ -406,6 +409,7 @@ class TableFuncWrapper(object):
         self._columns = []
         self._index = None
         self._len = 0
+        self._arg_map = get_arg_map(func, **expressions)
 
     @property
     def columns(self):
@@ -453,8 +457,9 @@ class TableFuncWrapper(object):
                 'call function to get frame for table {!r}'.format(
                     self.name),
                 logger):
-            kwargs = _collect_variables(names=self._argspec.args,
-                                        expressions=self._argspec.defaults)
+            #kwargs = _collect_variables(names=self._argspec.args,
+            #                            expressions=self._argspec.defaults)
+            kwargs = _collect_variables2(self._arg_map)
             frame = self._func(**kwargs)
 
         self._columns = list(frame.columns)
@@ -597,6 +602,9 @@ class _ColumnFuncWrapper(object):
         (or until manually cleared). 'iteration' caches data for each
         complete iteration of the pipeline, 'step' caches data for
         a single step of the pipeline.
+    **expressions: kwargs, optional
+        Expressions for argument collection. Keys are the arg names
+        in the function and the values the expression to use when collecting.
 
     Attributes
     ----------
@@ -610,13 +618,14 @@ class _ColumnFuncWrapper(object):
     """
     def __init__(
             self, table_name, column_name, func, cache=False,
-            cache_scope=_CS_FOREVER):
+            cache_scope=_CS_FOREVER, **expressions):
         self.table_name = table_name
         self.name = column_name
         self._func = func
         self._argspec = getargspec(func)
         self.cache = cache
         self.cache_scope = cache_scope
+        self._arg_map = get_arg_map(func, **expressions)
 
     def __call__(self):
         """
@@ -634,8 +643,9 @@ class _ColumnFuncWrapper(object):
         with log_start_finish(
                 ('call function to provide column {!r} for table {!r}'
                  ).format(self.name, self.table_name), logger):
-            kwargs = _collect_variables(names=self._argspec.args,
-                                        expressions=self._argspec.defaults)
+            #kwargs = _collect_variables(names=self._argspec.args,
+            #                            expressions=self._argspec.defaults)
+            kwargs = _collect_variables2(self._arg_map)
             col = self._func(**kwargs)
 
         if self.cache:
@@ -724,6 +734,9 @@ class _InjectableFuncWrapper(object):
         (or until manually cleared). 'iteration' caches data for each
         complete iteration of the pipeline, 'step' caches data for
         a single step of the pipeline.
+    **expressions: kwargs, optional
+        Expressions for argument collection. Keys are the arg names
+        in the function and the values the expression to use when collecting.
 
     Attributes
     ----------
@@ -733,12 +746,13 @@ class _InjectableFuncWrapper(object):
         Whether caching is enabled for this injectable function.
 
     """
-    def __init__(self, name, func, cache=False, cache_scope=_CS_FOREVER):
+    def __init__(self, name, func, cache=False, cache_scope=_CS_FOREVER, **expressions):
         self.name = name
         self._func = func
         self._argspec = getargspec(func)
         self.cache = cache
         self.cache_scope = cache_scope
+        self._arg_map = get_arg_map(func, **expressions)
 
     def __call__(self):
         if _CACHING and self.cache and self.name in _INJECTABLE_CACHE:
@@ -749,8 +763,9 @@ class _InjectableFuncWrapper(object):
         with log_start_finish(
                 'call function to provide injectable {!r}'.format(self.name),
                 logger):
-            kwargs = _collect_variables(names=self._argspec.args,
-                                        expressions=self._argspec.defaults)
+            #kwargs = _collect_variables(names=self._argspec.args,
+            #                            expressions=self._argspec.defaults)
+            kwargs = _collect_variables2(self._arg_map)
             result = self._func(**kwargs)
 
         if self.cache:
@@ -778,6 +793,9 @@ class _StepFuncWrapper(object):
     ----------
     step_name : str
     func : callable
+    **expressions: kwargs, optional
+        Expressions for argument collection. Keys are the arg names
+        in the function and the values the expression to use when collecting.
 
     Attributes
     ----------
@@ -785,15 +803,17 @@ class _StepFuncWrapper(object):
         Name of step.
 
     """
-    def __init__(self, step_name, func):
+    def __init__(self, step_name, func, **expressions):
         self.name = step_name
         self._func = func
         self._argspec = getargspec(func)
+        self._arg_map = get_arg_map(func, **expressions)
 
     def __call__(self):
         with log_start_finish('calling step {!r}'.format(self.name), logger):
-            kwargs = _collect_variables(names=self._argspec.args,
-                                        expressions=self._argspec.defaults)
+            #kwargs = _collect_variables(names=self._argspec.args,
+            #                            expressions=self._argspec.defaults)
+            kwargs = _collect_variables2(self._arg_map)
             return self._func(**kwargs)
 
     def _tables_used(self):
@@ -900,6 +920,238 @@ def is_expression(name):
     return '.' in name
 
 
+def get_func_args(func):
+    """
+    Returns a function's argument names and default values. These are used by other
+    functions to establish dependencies and collect inputs.
+
+    Parameters:
+    -----------
+    func: callable
+        The function/callable to inspect.
+
+    Returns:
+    --------
+    arg_names: list of str
+        List of argument names.
+    default_kwargs:
+        Dictionary of default values. Keyed by the argument name.
+
+    """
+
+    # get function arguments
+    spec = getargspec(func)
+    args = spec.args
+    defaults = spec.defaults
+
+    # get keyword args for the function's default values
+    default_kwargs = {}
+    if defaults is not None:
+        kw_start_idx = len(args) - len(defaults)
+        default_kwargs = dict(zip([key for key in args[kw_start_idx:]], list(defaults)))
+
+    return args, default_kwargs
+
+
+def get_arg_map(func, **kwargs):
+    """
+    Returns a dictionary mapping between the input arguments of the provided
+    function and the values and/or injectables that will be used/collected
+    to evaluate it.
+
+    Rules:
+
+    1) By default, the original orca assumptions remain: the argument names in the
+    function should match names of registered injectables and tables.
+
+    2) Using python keyword args, will allow for overriding specific arguments with
+    reference to other injectables or values.
+
+        - Prefix the value with '@' to indicate the value will be provided by a registered
+        injectable.
+
+        - Non-prefixed values will cause the value to be static and used as is (sort of like
+        a partial function)
+
+    Example:
+
+        def func1(a, b, c, d=10):
+            pass
+
+        case 1, just follow the method signature and func defaults:
+
+            Call:
+            _get_arg_map(func1)
+
+            Returns:
+            {'a': 1, 'b': '@something', 'c': '@c', 'd': 10}
+
+        case 2, override arg names:
+            Call:
+            _get_arg_map(func1, a=1, b='@something')
+
+            Returns:
+            {'a': 1, 'b': '@something', 'c': '@c', 'd': 10}
+
+        case 3, also override func defaults
+           Call:
+            _get_arg_map(func1, a=1, b='@something', d='@hola')
+
+            Returns:
+            {'a': 1, 'b': '@something', 'c': '@c', 'd': '@hola'}
+
+    """
+    # get the functions input arguments and any default values
+    args, defaults = get_func_args(func)
+
+    # by default follow the function signature
+    arg_map = {a: '@{}'.format(a) for a in args}
+    for d, v in defaults.items():
+        arg_map[d] = v
+
+    # update using the provided kwargs
+    for k, v in kwargs.items():
+        arg_map[k] = v
+
+    return arg_map
+
+
+_expression_classes = {}
+def expression(cls):
+    """
+    Decorator for (variable) expression classes. Use this to add new/custom expression evaluators.
+
+    The decorated class must implement two class or static methods:
+
+        1) `dependencies`:
+            - Input argument should be a str representing the expression
+            - Returns a list of the injectables the expression depends upon (i.e. its inputs)
+            - Should return None if the provided str does not match the expected pattern
+
+        2) 'evaluate':
+            - Input argument should be a str representing the expression
+            - Should return the result of evaluating the expression
+            - Should return None if the provided str does not match the expected pattern
+
+    ??? How do we implement caching with this???
+
+    """
+    name = cls.__name__
+    try:
+       cls.dependencies('blah')
+    except:
+        raise ValueError("{} must implement class or static method for `dependencies`".format(name))
+    try:
+        cls.evaluate('blah')
+    except:
+        raise ValueError("{} must implement class or static method for `evaluate`".format(name))
+
+    _expression_classes[cls.__name__] = cls
+    return cls
+
+
+@expression
+class TableExpression(object):
+    """
+    Used to evaluate expression representing a data frame.
+
+    """
+    @staticmethod
+    def _parse(expr):
+        """
+        Return a tuple that parse these table name and columns
+        to fetch for the expr.
+
+        """
+        try:
+            table_name = None
+            cols = None
+
+            if '.' in expr:
+                table_name, cols = expr.split('.')
+            elif '[' in expr and expr.endswith(']'):
+                # evaluate a subset of columns
+                table_name, cols = expr[:-1].split('[')
+                cols = cols.split(',')
+                cols = [c.strip().replace("'", "") for c in cols]
+
+            return table_name, cols
+
+        except Exception:
+            return None, None
+
+    @classmethod
+    def dependencies(cls, expr):
+        table, cols = cls._parse(expr)
+        if table is None:
+            return None
+        if cols == '*':
+            cols = get_table(table).columns
+        elif cols == 'local':
+            cols = get_table(table).local_columns
+        return table, cols
+
+
+    @classmethod
+    def evaluate(cls, expr):
+        table, cols = cls._parse(expr)
+        if table is None:
+            return None
+
+        wrapper = get_table(table)
+        if cols == 'local':
+            return wrapper.local
+        elif cols == '*':
+            return wrapper.to_frame()
+        elif isinstance(cols, list):
+            return wrapper.to_frame(cols)
+        else:
+            return wrapper[cols]
+
+
+def _collect_variables2(arg_map):
+    """
+    TODO: this kind of ugly, re-work and clean up.
+
+    """
+    _injectables =  tz.merge(_INJECTABLES, _TABLES)
+    collected = {}
+
+    for k, v in arg_map.items():
+
+        if isinstance(v, str) and v.startswith('@'):
+            expr = v[1:]
+            result = None
+
+            # if this is a registered injectable
+            if expr in _injectables:
+                inj = _injectables[expr]
+                if callable(expr):
+                    result = inj()
+                else:
+                    result = inj
+
+            # loop through the registered expression functions until we
+            # get a valid (non null result)
+            # TODO: what to do if multiple functions can be evaluated?
+            else:
+                for ec in _expression_classes.values():
+                    result = ec.evaluate(expr)
+                    if result is not None:
+                        break
+
+            # if we get this far the expression could not be evaluated
+            if result is None:
+                raise ValueError('{} could not be collected'.format(expr))
+            else:
+                collected[k] = result
+        else:
+            # a static default value
+            collected[k] = v
+
+    return collected
+
+
 def _collect_variables(names, expressions=None):
     """
     Map labels and expressions to registered variables.
@@ -964,7 +1216,7 @@ def _collect_variables(names, expressions=None):
 
 def add_table(
         table_name, table, cache=False, cache_scope=_CS_FOREVER,
-        copy_col=True):
+        copy_col=True, **expressions):
     """
     Register a table with Orca.
 
@@ -987,6 +1239,9 @@ def add_table(
         a single step of the pipeline.
     copy_col : bool, optional
         Whether to return copies when evaluating columns.
+    **expressions: kwargs, optional
+        Expressions for argument collection. Keys are the arg names
+        in the function and the values the expression to use when collecting.
 
     Returns
     -------
@@ -995,7 +1250,7 @@ def add_table(
     """
     if isinstance(table, Callable):
         table = TableFuncWrapper(table_name, table, cache=cache,
-                                 cache_scope=cache_scope, copy_col=copy_col)
+                                 cache_scope=cache_scope, copy_col=copy_col, **expressions)
     else:
         table = DataFrameWrapper(table_name, table, copy_col=copy_col)
 
@@ -1009,7 +1264,7 @@ def add_table(
 
 
 def table(
-        table_name=None, cache=False, cache_scope=_CS_FOREVER, copy_col=True):
+        table_name=None, cache=False, cache_scope=_CS_FOREVER, copy_col=True, **expressions):
     """
     Decorates functions that return DataFrames.
 
@@ -1030,7 +1285,7 @@ def table(
             name = func.__name__
         add_table(
             name, func, cache=cache, cache_scope=cache_scope,
-            copy_col=copy_col)
+            copy_col=copy_col, **expressions)
         return func
     return decorator
 
@@ -1099,7 +1354,7 @@ def table_type(table_name):
 
 
 def add_column(
-        table_name, column_name, column, cache=False, cache_scope=_CS_FOREVER):
+        table_name, column_name, column, cache=False, cache_scope=_CS_FOREVER, **expressions):
     """
     Add a new column to a table from a Series or callable.
 
@@ -1123,13 +1378,16 @@ def add_column(
         (or until manually cleared). 'iteration' caches data for each
         complete iteration of the pipeline, 'step' caches data for
         a single step of the pipeline.
+    **expressions: kwargs, optional
+        Expressions for argument collection. Keys are the arg names
+        in the function and the values the expression to use when collecting.
 
     """
     if isinstance(column, Callable):
         column = \
             _ColumnFuncWrapper(
                 table_name, column_name, column,
-                cache=cache, cache_scope=cache_scope)
+                cache=cache, cache_scope=cache_scope, **expressions)
     else:
         column = _SeriesWrapper(table_name, column_name, column)
 
@@ -1143,7 +1401,7 @@ def add_column(
     return column
 
 
-def column(table_name, column_name=None, cache=False, cache_scope=_CS_FOREVER):
+def column(table_name, column_name=None, cache=False, cache_scope=_CS_FOREVER, **expressions):
     """
     Decorates functions that return a Series.
 
@@ -1164,7 +1422,7 @@ def column(table_name, column_name=None, cache=False, cache_scope=_CS_FOREVER):
         else:
             name = func.__name__
         add_column(
-            table_name, name, func, cache=cache, cache_scope=cache_scope)
+            table_name, name, func, cache=cache, cache_scope=cache_scope, **expressions)
         return func
     return decorator
 
@@ -1306,7 +1564,7 @@ def _memoize_function(f, name, cache_scope=_CS_FOREVER):
 
 def add_injectable(
         name, value, autocall=True, cache=False, cache_scope=_CS_FOREVER,
-        memoize=False):
+        memoize=False, **expressions):
     """
     Add a value that will be injected into other functions.
 
@@ -1338,12 +1596,15 @@ def add_injectable(
         keyed by argument values, so the argument values must be hashable.
         Memoized functions have their caches cleared according to the same
         rules as universal caching.
+    **expressions: kwargs, optional
+        Expressions for argument collection. Keys are the arg names
+        in the function and the values the expression to use when collecting.
 
     """
     if isinstance(value, Callable):
         if autocall:
             value = _InjectableFuncWrapper(
-                name, value, cache=cache, cache_scope=cache_scope)
+                name, value, cache=cache, cache_scope=cache_scope, **expressions)
             # clear any cached data from a previously registered value
             value.clear_cached()
         elif not autocall and memoize:
@@ -1355,7 +1616,7 @@ def add_injectable(
 
 def injectable(
         name=None, autocall=True, cache=False, cache_scope=_CS_FOREVER,
-        memoize=False):
+        memoize=False, **expressions):
     """
     Decorates functions that will be injected into other functions.
 
@@ -1376,7 +1637,7 @@ def injectable(
             n = func.__name__
         add_injectable(
             n, func, autocall=autocall, cache=cache, cache_scope=cache_scope,
-            memoize=memoize)
+            memoize=memoize, **expressions)
         return func
     return decorator
 
@@ -1479,7 +1740,7 @@ def get_injectable_func_source_data(name):
         return utils.func_source_data(inj)
 
 
-def add_step(step_name, func):
+def add_step(step_name, func, **expressions):
     """
     Add a step function to Orca.
 
@@ -1493,16 +1754,19 @@ def add_step(step_name, func):
     ----------
     step_name : str
     func : callable
+    **expressions: kwargs, optional
+        Expressions for argument collection. Keys are the arg names
+        in the function and the values the expression to use when collecting.
 
     """
     if isinstance(func, Callable):
         logger.debug('registering step {!r}'.format(step_name))
-        _STEPS[step_name] = _StepFuncWrapper(step_name, func)
+        _STEPS[step_name] = _StepFuncWrapper(step_name, func, **expressions)
     else:
         raise TypeError('func must be a callable')
 
 
-def step(step_name=None):
+def step(step_name=None, **expressions):
     """
     Decorates functions that will be called by the `run` function.
 
@@ -1521,7 +1785,7 @@ def step(step_name=None):
             name = step_name
         else:
             name = func.__name__
-        add_step(name, func)
+        add_step(name, func, **expressions)
         return func
     return decorator
 
