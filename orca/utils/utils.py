@@ -64,6 +64,34 @@ def get_func_args(func):
     return args, default_kwargs
 
 
+def kwarg_val_is_constant(val):
+    """
+    Determines if the provided value, presumably defined as a value in a function
+    default (**kwargs) argument, should be treated as a static/constant value or if the
+    value refers to an injected/managed item (injectable, table, etc.) that will be collected
+    from the environment.
+
+    A value is assumed to be constant if:
+        - it is NOT a string OR
+        - the string has a nested `'` in the name: e.g. "'my string'"
+
+    Parameters:
+    ----------
+    val: value
+        The default value to check.
+
+    Returns:
+    --------
+    bool
+
+    """
+    if isinstance(val, str):
+        if not (val[0] == "'" and val[-1] == "'"):
+            return False
+
+    return True
+
+
 def get_arg_map(func, **kwargs):
     """
     Returns a dictionary mapping between the input arguments of the provided
@@ -76,54 +104,53 @@ def get_arg_map(func, **kwargs):
         The function/callable.
     **kwargs: dictionary of keyword args, optional
         Dictionary of argument overrides. Keys are arg names to override.
-        Values prefixed with '@' indicate the item to collect,
-        values without '@' are treated as static values.
+        Values indicate the injected item or constant value to use.
+
+    Note in order to differentiate between injected names and str constant
+    values, str constants should have a nested `'` and be specified in the
+    form "'my_constant'" whereas the name of an injected item would be simply
+    "my_injectable" or 'my_injectable'. All non str values are assumed to be
+    constants.
 
     Returns:
     --------
     dict
-        - Keys are the func's input argument names
-        - Values:
-            - If prefixed with '@' indicate the argument will be collected from
-                the orca environment
-            - Otherwise the provided value will be used as is
-                (sort of like a functools.partial)
 
     Examples:
     --------
-    def func1(a, b, c, d=10):
+    def func1(a, b, c="'something'", d=10):
         pass
 
-        case 1, just follow the method signature and func defaults:
+        case 1, no overrides, just follow the method signature:
 
             Call:
             get_arg_map(func1)
 
             Returns:
-            {'a': '@a', 'b': '@b', 'c': '@c', 'd': 10}
+            {'a': 'a', 'b': 'b', 'c': "'something'", 'd': 10}
 
         case 2, override arg names:
 
             Call:
-            get_arg_map(func1, a=1, b='@something')
+            get_arg_map(func1, a=1, b='my_injectable')
 
             Returns:
-            {'a': 1, 'b': '@something', 'c': '@c', 'd': 10}
+            {'a': 1, 'b': 'my_injectable', 'c': "'something'", 'd': 10}
 
         case 3, also override func defaults
 
             Call:
-            get_arg_map(func1, b=100, d='@hola')
+            get_arg_map(func1, b=100, c="'something else'", d='hola')
 
             Returns:
-            {'a': '@a', 'b': 100, 'c': '@c', 'd': '@hola'}
+            {'a': 'a', 'b': 100, 'c': "'something else'", 'd': 'hola'}
 
     """
     # get the functions input arguments and any default values
     args, defaults = get_func_args(func)
 
     # by default follow the function signature
-    arg_map = {a: '@{}'.format(a) for a in args}
+    arg_map = {a: a for a in args}
     for d, v in defaults.items():
         arg_map[d] = v
 
