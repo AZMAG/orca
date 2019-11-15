@@ -45,32 +45,25 @@ def test_get_func_args(func1, func2):
     assert defaults2 == {'c': 100, 'd': "'a str const'"}
 
 
-def test_kwarg_val_is_constant(func1):
-
-    assert not utils.kwarg_val_is_constant('something')
-    assert utils.kwarg_val_is_constant("'something'")
-    assert utils.kwarg_val_is_constant(10)
-    assert utils.kwarg_val_is_constant(10.5)
-    assert utils.kwarg_val_is_constant(True)
-    assert utils.kwarg_val_is_constant(list('abcd'))
-    assert utils.kwarg_val_is_constant(func1)
-    assert utils.kwarg_val_is_constant(None)
-
-
-def test_get_argmap(func1, func2):
+def test_get_arg_maps(func1, func2):
 
     # test 1 - no argument overrides, no defaults
-    a = utils.get_arg_map(func1)
-    assert a == {'a': 'a', 'b': 'b'}
+    inj, const = utils.get_arg_maps(func1)
+    assert inj == {'a': 'a', 'b': 'b'}
+    assert const == {}
 
     # test 2 - no argument overrides, w/ defaults
-    a = utils.get_arg_map(func2)
-    assert a == {'a': 'a', 'b': 'b', 'c': 100, 'd': "'a str const'"}
+    inj, const = utils.get_arg_maps(func2)
+    assert inj == {'a': 'a', 'b': 'b'}
+    assert const == {'c': 100, 'd': 'a str const'}
 
-    # test 3 - override args, no defaults
-    a = utils.get_arg_map(func1, b='hola')
-    assert a == {'a': 'a', 'b': 'hola'}
+    # test 3: override args, no defaults
+    inj, const = utils.get_arg_maps(func1, b='hola')
+    assert inj == {'a': 'a', 'b': 'hola'}
+    assert const == {}
 
-    # test 4 - override args and defaults
-    a = utils.get_arg_map(func2, a=20, b='hola', c='amigo', d="'another const'")
-    assert a == {'a': 20, 'b': 'hola', 'c': 'amigo', 'd': "'another const'"}
+    # test 4: override args and defaults
+    inj, const = utils.get_arg_maps(
+        func2, a=20, b="'hola'", c='amigo', d="'another const'")
+    assert inj == {'c': 'amigo'}
+    assert const == {'a': 20, 'b': 'hola', 'd': 'another const'}

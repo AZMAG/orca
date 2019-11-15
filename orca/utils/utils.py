@@ -64,37 +64,9 @@ def get_func_args(func):
     return args, default_kwargs
 
 
-def kwarg_val_is_constant(val):
+def get_arg_maps(func, **kwargs):
     """
-    Determines if the provided value, presumably defined as a value in a function
-    default (**kwargs) argument, should be treated as a static/constant value or if the
-    value refers to an injected/managed item (injectable, table, etc.) that will be collected
-    from the environment.
-
-    A value is assumed to be constant if:
-        - it is NOT a string OR
-        - the string has a nested `'` in the name: e.g. "'my string'"
-
-    Parameters:
-    ----------
-    val: value
-        The default value to check.
-
-    Returns:
-    --------
-    bool
-
-    """
-    if isinstance(val, str):
-        if not (val[0] == "'" and val[-1] == "'"):
-            return False
-
-    return True
-
-
-def get_arg_map(func, **kwargs):
-    """
-    Returns a dictionary mapping between the input arguments of the provided
+    Returns mappings between the input arguments of the provided
     function and the values and/or injectables that will be used/collected
     to evaluate it.
 
@@ -114,36 +86,14 @@ def get_arg_map(func, **kwargs):
 
     Returns:
     --------
-    dict
+    injected_args: dict
+        Dictionary of input arguments that are injected items.
+        Keys are the corresponding func arg names. Values are the names
+        of injected items that will be collected from the environment.
 
-    Examples:
-    --------
-    def func1(a, b, c="'something'", d=10):
-        pass
-
-        case 1, no overrides, just follow the method signature:
-
-            Call:
-            get_arg_map(func1)
-
-            Returns:
-            {'a': 'a', 'b': 'b', 'c': "'something'", 'd': 10}
-
-        case 2, override arg names:
-
-            Call:
-            get_arg_map(func1, a=1, b='my_injectable')
-
-            Returns:
-            {'a': 1, 'b': 'my_injectable', 'c': "'something'", 'd': 10}
-
-        case 3, also override func defaults
-
-            Call:
-            get_arg_map(func1, b=100, c="'something else'", d='hola')
-
-            Returns:
-            {'a': 'a', 'b': 100, 'c': "'something else'", 'd': 'hola'}
+    constant_args: dict
+        Dictionary of input arguments that are constant values.
+        Key are the corresponding func arg names. Values are the constants.
 
     """
     # get the functions input arguments and any default values
@@ -158,4 +108,20 @@ def get_arg_map(func, **kwargs):
     for k, v in kwargs.items():
         arg_map[k] = v
 
-    return arg_map
+    # organize into injected items and constants
+    inj = {}
+    const = {}
+
+    for k, v in arg_map.items():
+        if isinstance(v, str):
+            if v[0] == "'" and v[-1] == "'":
+                # str constant, e.g. "'abcd'"
+                const[k] = v[1:-1]
+            else:
+                # injected item
+                inj[k] = v
+        else:
+            # non str assumed to be constant
+            const[k] = v
+
+    return inj, const
