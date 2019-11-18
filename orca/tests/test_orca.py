@@ -1258,3 +1258,93 @@ def test_get_injectable_func_source_data():
     assert filename.endswith('test_orca.py')
     assert isinstance(lineno, int)
     assert 'def inj2()' in source
+
+
+def test_expression_registration():
+
+    @orca.expression
+    class SimpleExpression(object):
+
+        @staticmethod
+        def dependencies(expr):
+            return None
+
+        @staticmethod
+        def evaluate(expr):
+            return None
+
+    with pytest.raises(ValueError):
+
+        @orca.expression
+        class BadExpression1(object):
+            """
+            This one is missing evaluate.
+
+            """
+            @staticmethod
+            def dependencies(expr):
+                return None
+
+    with pytest.raises(ValueError):
+
+        @orca.expression
+        class BadExpression2(object):
+            """
+            This one is missing dependencies.
+
+            """
+            @staticmethod
+            def evaluate(expr):
+                return None
+
+
+def test_table_expression(df):
+
+        orca.add_table('test_df', df)
+
+        @orca.column('test_df')
+        def test_col():
+            return df['a'] + 1
+
+        # test 1 - not a valid expression
+        expr = 'not valid'
+        assert orca.TableExpression.dependencies(expr) is None
+        assert orca.TableExpression.evaluate(expr) is None
+
+        # test 1a - not valid expression that would normally raise an error
+        # instead we just exect it to return None
+        assert orca.TableExpression.evaluate(10) is None
+
+        # test 2 - a single column
+        expr = 'test_df.a'
+        expected_deps = [('test_df', 'a')]
+        expected = df['a'].copy()
+        result = orca.TableExpression.evaluate(expr)
+        assert orca.TableExpression.dependencies(expr) == expected_deps
+        assert (result == expected).all()
+
+        # test 3 - local columns
+        expr = 'test_df.local'
+        expected_deps = [('test_df', 'a'), ('test_df', 'b')]
+        expected = df.copy()
+        assert orca.TableExpression.dependencies(expr) == expected_deps
+        assert_frames_equal(orca.TableExpression.evaluate(expr), expected)
+
+        # test 4 - all columns
+        expr = 'test_df.*'
+        expected_deps = [('test_df', 'a'), ('test_df', 'b'), ('test_df', 'test_col')]
+        expected['test_col'] = expected['a'] + 1
+        assert orca.TableExpression.dependencies(expr) == expected_deps
+        assert_frames_equal(orca.TableExpression.evaluate(expr), expected)
+
+        # test 5 - subset of columns
+        expr = 'test_df[b, test_col]'
+        expected_deps = [('test_df', 'b'),  ('test_df', 'test_col')]
+        expected = expected[['b', 'test_col']]
+        assert orca.TableExpression.dependencies(expr) == expected_deps
+        assert_frames_equal(orca.TableExpression.evaluate(expr), expected)
+
+        # test 5a - subset of columns w/ different syntax
+        expr = "test_df['b', 'test_col']"
+        assert orca.TableExpression.dependencies(expr) == expected_deps
+        assert_frames_equal(orca.TableExpression.evaluate(expr), expected)

@@ -900,6 +900,106 @@ def is_expression(name):
     return '.' in name
 
 
+_expression_classes = {}
+
+
+def expression(cls):
+    """
+    Decorator for (variable) expression classes. Use this to add new/custom expression evaluators.
+    The decorated class must implement two class or static methods:
+
+        1) `dependencies`:
+            - Input argument should be a str representing the expression
+            - Returns a list of the injectables the expression depends upon (i.e. its inputs)
+            - Should return None if the provided str does not match the expected pattern
+
+        2) 'evaluate':
+            - Input argument should be a str representing the expression
+            - Should return the result of evaluating the expression
+            - Should return None if the provided str does not match the expected pattern
+
+
+    """
+    name = cls.__name__
+    try:
+       cls.dependencies('blah')
+    except:
+        raise ValueError("{} must implement class or static method for `dependencies`".format(name))
+    try:
+        cls.evaluate('blah')
+    except:
+        raise ValueError("{} must implement class or static method for `evaluate`".format(name))
+
+    _expression_classes[cls.__name__] = cls
+    return cls
+
+
+@expression
+class TableExpression(object):
+    """
+    Used to evaluate expression representing a data frame.
+
+    """
+
+    @staticmethod
+    def _parse(expr):
+        """
+        Return a tuple that parse these table name and columns
+        to fetch for the expr.
+
+        """
+        try:
+            table_name = None
+            cols = None
+
+            if '.' in expr:
+                table_name, cols = expr.split('.')
+            elif '[' in expr and expr.endswith(']'):
+                # evaluate a subset of columns
+                table_name, cols = expr[:-1].split('[')
+                cols = cols.split(',')
+                cols = [c.strip().replace("'", "") for c in cols]
+
+            return table_name, cols
+
+        except Exception:
+            return None, None
+
+    @classmethod
+    def dependencies(cls, expr):
+        table, cols = cls._parse(expr)
+        if table is None:
+            return None
+        if cols == '*':
+            cols = get_table(table).columns
+        elif cols == 'local':
+            cols = get_table(table).local_columns
+        if isinstance(cols, str):
+            cols = [cols]
+        d = []
+        for c in cols:
+            d.append((table, c))
+        return d
+
+    @classmethod
+    def evaluate(cls, expr):
+        table, cols = cls._parse(expr)
+        if table is None:
+            return None
+
+        wrapper = get_table(table)
+
+        if cols == 'local':
+            # should we return a copy of local instead?
+            return wrapper.local
+        elif cols == '*':
+            return wrapper.to_frame()
+        elif isinstance(cols, list):
+            return wrapper.to_frame(cols)
+        else:
+            return wrapper[cols]
+
+
 def _collect_variables(names, expressions=None):
     """
     Map labels and expressions to registered variables.
